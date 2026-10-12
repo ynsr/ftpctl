@@ -242,10 +242,33 @@ def build_parser() -> argparse.ArgumentParser:
     }
     sub = parser.add_subparsers(dest="command", required=True)
     p_profiles = sub.add_parser("profiles", help="list profile names, protocol, host, root, readonly (no secrets)")
+    p_profiles.set_defaults(profiles_cmd=None, sample=False)
     p_profiles.add_argument("--output", "-o", **_fmt_kwargs)  # type: ignore[arg-type]
     p_profiles.add_argument("--json", **_json_kwargs)  # type: ignore[arg-type]
     p_profiles.add_argument("--sample", action="store_true",
                             help="print a reference profiles.toml with all fields and rules, then exit")
+    p_add = p_profiles.add_subparsers(dest="profiles_cmd")
+    p_add_entry = p_add.add_parser("add", help="add a profile with a live connection probe")
+    p_add_entry.add_argument("--name", default=None)
+    p_add_entry.add_argument("--protocol", default=None, choices=["sftp", "ftps", "ftp"])
+    p_add_entry.add_argument("--host", default=None)
+    p_add_entry.add_argument("--port", type=int, default=None)
+    p_add_entry.add_argument("--username", default=None)
+    p_add_entry.add_argument("--root", default=None)
+    p_add_entry.add_argument("--known-hosts", dest="known_hosts", default=None)
+    p_add_entry.add_argument("--ftps-mode", dest="ftps_mode", default="explicit",
+                             choices=["explicit", "implicit"])
+    p_add_entry.add_argument("--ftp-passive", dest="ftp_passive", action="store_true", default=True)
+    p_add_entry.add_argument("--no-ftp-passive", dest="ftp_passive", action="store_false")
+    p_add_entry.add_argument("--readonly", action="store_true", default=True)
+    p_add_entry.add_argument("--no-readonly", dest="readonly", action="store_false")
+    p_add_entry.add_argument("--allow-insecure", action="store_true", default=False)
+    p_add_entry.add_argument("--timeout", type=float, default=None)
+    p_add_entry.add_argument("--overwrite", action="store_true", default=False)
+    p_add_entry.add_argument("--yes", action="store_true", default=False,
+                             help="answer yes to pin/add-anyway prompts")
+    p_add_entry.add_argument("--no-input", action="store_true", default=False,
+                             help="never prompt; fail instead")
     p_ls = sub.add_parser("ls", help="list a remote directory as JSON")
     p_ls.add_argument("--profile", required=True)
     p_ls.add_argument("path", nargs="?", default="/")
@@ -287,8 +310,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)  # usage errors exit via _Parser.error envelope
     try:
-        if args.command == "profiles" and args.sample:
+        if args.command == "profiles" and getattr(args, "sample", False):
             raise SystemExit(cmd_profiles_sample())
+        if args.command == "profiles" and getattr(args, "profiles_cmd", None) == "add":
+            from .profiles_add import cmd_profiles_add
+            raise SystemExit(cmd_profiles_add(args, args.config))
         if args.command == "profiles":
             config, warnings = load_config(
                 Path(args.config).expanduser() if args.config else None
