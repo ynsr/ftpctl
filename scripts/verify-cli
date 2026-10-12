@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# verify-cli — conformance gate for generated CLIs (spec §4.2).
+# Usage: verify-cli <path-or-command> [probe-read] [probe-destructive]
+#   probe-read:        a read-only subcommand (e.g. "list") — enables checks 3, 6
+#   probe-destructive: a destructive subcommand (e.g. "delete") — enables check 7
+# Exit: 0 all pass (SKIP never fails) · 1 failures listed.
+# Checks 1,2,4,5,8 unconditional; 3,6,7 conditional (absent probe → SKIP).
+set -u
+LC_ALL=C
+
+FAIL=0
+PASS=0
+SKIP=0
+CMD=""
+PROBE_READ=""
+PROBE_DESTRUCTIVE=""
+
+say() { printf '%s\n' "$*"; }
+pass() { PASS=$((PASS + 1)); say "PASS $1"; }
+fail() { FAIL=$((FAIL + 1)); say "FAIL $1"; [ -n "${2:-}" ] && say "     $2"; }
+skip() { SKIP=$((SKIP + 1)); say "SKIP $1"; }
+
+# run <outfile> <errfile> <args...> — always non-interactive, no color
+run_tool() {
+  local out=$1 err=$2; shift 2
+  NO_COLOR=1 TERM=dumb timeout 10 "$CMD" "$@" </dev/null >"$out" 2>"$err"
+}
+
+ansi_re=$'\e\[[0-9;]*m'
+log_re='^(\[|INFO|WARN|ERROR|DEBUG|TRACE|log:|warning:|error: )'
+
+# 1 --help exit 0 mentions exit codes; --version exit 0
+check_help_version() {
+  local out err
+  out=$(mktemp); err=$(mktemp)
+  if ! run_tool "$out" "$err" --help; then
+    fail 1 "--help exited non-zero ($( [ -s "$err" ] && head -c 200 "$err" ))"
+  elif ! grep -qi 'exit code' "$out"; then
+    fail 1 "--help does not document exit codes"
+  else
+    pass 1
+  fi
+  if run_tool "$out" "$err" --version; then pass 1b; else fail 1b "--version exited non-zero"; fi
+  rm -f "$out" "$err"
+}
+
+# 2 stdout purity: stdout carries data only — no UI bytes (log lines, prompts, box-drawing)
+# regardless of the probe's exit status (setup failures surface in checks 3/6, not here).
+check_stdout_purity() {
+  local out err rc=0
+  out=$(mktemp); err=$(mktemp)
+  if [ -n "$PROBE_READ" ]; then
+    # shellcheck disable=SC2086
+    NO_COLOR=1 TERM=dumb timeout 10 "$CMD" $PROBE_READ </dev/null >"$out" 2>/dev/null || rc=$?
+  else
+    run_tool "$out" "$err" --help || rc=$?
+  fi
+  if [ -s "$out" ] && grep -Eq "$log_re" "$out"; then
+    fail 2 "log-like lines on stdout (probe exit $rc): $(grep -Em1 "$log_re" "$out" | head -c 160)"
+  elif [ -s "$out" ] && grep -Eq $'\e\[[0-9;]*m|^[╭╰│├└]' "$out"; then
+    fail 2 "UI bytes (ANSI/box-drawing) on stdout (probe exit $rc)"
+  else
+    pass 2
+  fi
+  rm -f "$out" "$err"
+}
+
+# 3 --output json parses (jq -e .); -o csv has a non-empty header row
+check_output_formats() {
+  [ -n "$PROBE_READ" ] || { skip 3 "no probe-read"; return; }
+  local out err
+  out=$(mktemp); err=$(mktemp)
+  # shellcheck disable=SC2086
+  if NO_COLOR=1 TERM=dumb timeout 10 "$CMD" $PROBE_READ --output json </dev/null >"$out" 2>"$err"; then
+    if jq -e . "$out" >/dev/null 2>&1; then pass 3a; else fail 3a "--output json is not valid JSON: $(head -c 120 "$out")"; fi
+  else
+    fail 3a "--output json exited non-zero: $(head -c 200 "$err")"
+  fi
+  local fmt
+  for fmt in csv tsv; do
+    # shellcheck disable=SC2086
+    if NO_COLOR=1 TERM=dumb timeout 10 "$CMD" $PROBE_READ -o "$fmt" </dev/null >"$out" 2>"$err"; then
+      [ -s "$out" ] && pass "3-$fmt" || fail "3-$fmt" "-o $fmt produced empty output"
+    else
+      fail "3-$fmt" "-o $fmt exited non-zero: $(head -c 200 "$err")"
+    fi
+  done
+  rm -f "$out" "$err"
+}
+
+# 4 non-TTY never blocks (stdin from /dev/null, hard 5s wall)
+check_no_block() {
+  local args=(--help)
+  [ -n "$PROBE_READ" ] && args=($PROBE_READ)
+  timeout 5 "$CMD" "${args[@]}" </dev/null >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 124 ]; then
+    fail 4 "blocked >5s on non-TTY (${args[*]})"
+  else
+    pass 4
+  fi
+}
+
+# 5 no ANSI escapes: under NO_COLOR=1 TERM=dumb, AND via --no-color flag (no env)
+check_no_color() {
+  local out err rc=0
+  out=$(mktemp); err=$(mktemp)
+  run_tool "$out" "$err" --help || rc=$?
+  [ "$rc" -eq 0 ] && [ -n "$PROBE_READ" ] && { NO_COLOR=1 TERM=dumb timeout 10 "$CMD" $PROBE_READ </dev/null >"$out" 2>"$err" || rc=$?; }
+  if grep -q "$ansi_re" "$out" 2>/dev/null; then
+    fail 5 "ANSI escape emitted despite NO_COLOR/TERM=dumb"
+    rm -f "$out" "$err"
+    return
+  fi
+  # --no-color flag (no env) must also suppress ANSI
+  if [ "$rc" -eq 0 ]; then
+    local flagout
+    flagout=$(mktemp)
+    local flagargs=(--no-color)
+    [ -n "$PROBE_READ" ] && flagargs=($PROBE_READ --no-color)
+    # shellcheck disable=SC2086
+    timeout 10 "$CMD" ${flagargs[@]} </dev/null >"$flagout" 2>/dev/null
+    if grep -q "$ansi_re" "$flagout" 2>/dev/null; then
+      fail 5 "ANSI escape emitted despite --no-color flag"
+    else
+      pass 5
+    fi
+    rm -f "$flagout"
+  else
+    pass 5
+  fi
+  rm -f "$out" "$err"
+}
+
+# 6 bad subcommand → exit 2 + {"error":{"code","message","hint"}} envelope on stderr
+check_error_envelope() {
+  [ -n "$PROBE_READ" ] || { skip 6 "no probe-read"; return; }
+  local out err rc=0
+  out=$(mktemp); err=$(mktemp)
+  run_tool "$out" "$err" __verify_cli_no_such_subcommand__ || rc=$?
+  if [ "$rc" -ne 2 ]; then
+    fail 6 "bad subcommand exited $rc, expected 2 (usage)"
+  elif ! jq -e '.error.code and .error.message and .error.hint' "$err" >/dev/null 2>&1; then
+    fail 6 "stderr is not an error envelope: $(head -c 200 "$err")"
+  else
+    pass 6
+  fi
+  rm -f "$out" "$err"
+}
+
+# 7 --dry-run without --yes exits 0 and prints the plan on stdout
+check_dry_run() {
+  [ -n "$PROBE_DESTRUCTIVE" ] || { skip 7 "no probe-destructive"; return; }
+  local out err
+  out=$(mktemp); err=$(mktemp)
+  # shellcheck disable=SC2086
+  if NO_COLOR=1 TERM=dumb timeout 10 "$CMD" $PROBE_DESTRUCTIVE --dry-run </dev/null >"$out" 2>"$err"; then
+    [ -s "$out" ] && pass 7 || fail 7 "--dry-run printed no plan"
+  else
+    fail 7 "--dry-run exited non-zero: $(head -c 200 "$err")"
+  fi
+  rm -f "$out" "$err"
+}
+
+# 9 picker abort purity (wizard tiers): when the tool has a pick-gated command
+# (profile remove with no NAME), a bare non-TTY invocation must fail fast with
+# the usage envelope (exit 2) — never block, never act, and never leak
+# "Cancelled"-style abort text to stdout.
+check_picker_abort() {
+  local helpout
+  helpout=$(mktemp)
+  if ! NO_COLOR=1 TERM=dumb timeout 10 "$CMD" profile remove --help </dev/null >"$helpout" 2>/dev/null; then
+    skip 9 "no pick-gated profile remove"
+    rm -f "$helpout"
+    return
+  fi
+  rm -f "$helpout"
+  local out err rc=0
+  out=$(mktemp); err=$(mktemp)
+  NO_COLOR=1 TERM=dumb timeout 10 "$CMD" profile remove </dev/null >"$out" 2>"$err" || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    fail 9 "pick-gated command blocked >10s on non-TTY"
+  elif [ "$rc" -ne 2 ]; then
+    fail 9 "pick-gated refusal exited $rc, expected 2 (usage): $(head -c 200 "$err")"
+  elif grep -qi 'cancelled by user' "$out"; then
+    fail 9 "abort text leaked to stdout"
+  elif ! jq -e '.error.code' "$err" >/dev/null 2>&1; then
+    fail 9 "refusal is not an error envelope: $(head -c 200 "$err")"
+  else
+    pass 9
+  fi
+  rm -f "$out" "$err"
+}
+# 8 completion generation succeeds, non-empty (try known generator entrypoints)
+check_completion() {
+  local out err sub rc
+  out=$(mktemp); err=$(mktemp)
+  for sub in "completions show bash" "completion bash" "completions bash"; do
+    # shellcheck disable=SC2086
+    if run_tool "$out" "$err" $sub; then
+      if [ -s "$out" ]; then pass 8; rm -f "$out" "$err"; return; fi
+    fi
+  done
+  # Click/Typer hidden protocol
+  if run_tool "$out" "$err" __complete "" 2>/dev/null && [ -s "$out" ]; then pass 8; rm -f "$out" "$err"; return; fi
+  if grep -qiE 'completion' <(timeout 10 "$CMD" --help </dev/null 2>/dev/null); then
+    fail 8 "completion subcommand advertised but generated no script"
+  else
+    skip 8 "no completion generator found"
+  fi
+  rm -f "$out" "$err"
+}
+
+main() {
+  case "${1:-}" in
+    -h|--help)
+      say "Usage: verify-cli <path-or-command> [probe-read] [probe-destructive]"
+      say "Exit 0 all pass; 1 failures listed. Checks per spec §4.2 (1–9)."
+      return 0 ;;
+    --self-test) ;;
+    "") say "Usage: verify-cli <path-or-command> [probe-read] [probe-destructive]" >&2; return 2 ;;
+  esac
+  if [ "${1:-}" = --self-test ]; then self_test; return $?; fi
+  CMD=$1; PROBE_READ=${2:-}; PROBE_DESTRUCTIVE=${3:-}
+  if ! command -v "$CMD" >/dev/null 2>&1 && [ ! -x "$CMD" ]; then
+    say "verify-cli: not executable: $CMD" >&2; return 2
+  fi
+  check_help_version
+  check_stdout_purity
+  check_output_formats
+  check_no_block
+  check_no_color
+  check_error_envelope
+  check_dry_run
+  check_completion
+  check_picker_abort
+  say "verify-cli: $PASS pass, $FAIL fail, $SKIP skip — $CMD"
+  [ "$FAIL" -eq 0 ]
+}
+
+# --self-test: build a throwaway conformant toy and verify 0; assert a broken toy fails
+self_test() {
+  local dir toy rc=0
+  dir=$(mktemp -d)
+  toy=$dir/goodcli
+  write_toy "$toy" conformant
+  chmod +x "$toy"
+  main "$toy" "list" "delete" || rc=$?
+  if [ "$rc" -ne 0 ]; then say "SELF-TEST FAIL: conformant toy did not pass (exit $rc)"; rm -rf "$dir"; return 1; fi
+  local bad=$dir/badcli
+  write_toy "$bad" broken
+  chmod +x "$bad"
+  rm -f "$dir/goodcli.out"
+  if VERIFY_BROKEN=1 main "$bad" "list" >/dev/null 2>&1; then
+    say "SELF-TEST FAIL: broken toy passed"; rm -rf "$dir"; return 1
+  fi
+  say "SELF-TEST OK (conformant toy: 0; broken toy: non-zero)"
+  rm -rf "$dir"
+  return 0
+}
+
+write_toy() {
+  local path=$1 kind=$2
+  cat >"$path" <<EOF
+#!/usr/bin/env bash
+set -u
+if [ "\${1:-}" = "--version" ]; then echo "toy 1.0"; exit 0; fi
+case "\${1:-}" in
+  --help|-h)
+    echo "Usage: toy [list] [delete]"
+    echo "Exit codes: 0 success, 1 error, 2 usage, 3 network, 4 partial"
+    exit 0 ;;
+  list)
+    shift
+    fmt=table
+    while [ \$# -gt 0 ]; do
+      case "\$1" in
+        --output|-o) fmt=\$2; shift 2 ;;
+        --json) fmt=json; shift ;;
+        *) echo "unknown option: \$1" >&2; exit 2 ;;
+      esac
+    done
+    case "\$fmt" in
+      json) echo '[{"name":"a","size":1}]' ;;
+      csv) echo "name,size"; echo "a,1" ;;
+      tsv) printf 'name\\tsize\\n'; printf 'a\\t1\\n' ;;
+      table) printf 'NAME  SIZE\\n'; printf 'a     1\\n' ;;
+      *) echo '{"error":{"code":"usage","message":"bad format","hint":"table|json|csv|tsv"}}' >&2; exit 2 ;;
+    esac ;;
+  delete)
+    if [ "\${2:-}" = "--dry-run" ]; then echo "would delete a"; exit 0; fi
+    echo "refusing without --yes" >&2; exit 2 ;;
+  completions)
+    echo "# bash completion for toy"; exit 0 ;;
+  __verify_cli_no_such_subcommand__|*)
+    if [ "\${VERIFY_BROKEN:-}" = 1 ]; then echo "oops" >&2; exit 1; fi
+    echo '{"error":{"code":"usage","message":"no such command","hint":"try --help"}}' >&2; exit 2 ;;
+esac
+EOF
+}
+
+main "$@"

@@ -1,0 +1,59 @@
+[project]
+name = "ftpctl"
+dynamic = ["version"]
+description = "ftpctl — safe Python CLI wrapper for FTP/FTPS/SFTP for AI agents (JSON output, profiles, no credential handling)."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "paramiko>=3.5",
+    "platformdirs>=4",
+]
+
+[project.scripts]
+ftpctl = "ftpctl.cli:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.4",
+    "pyftpdlib>=1.5.10",
+    "pyOpenSSL>=24",
+    "cryptography>=42",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "pyftpdlib>=1.5.10",
+    "pyOpenSSL>=24",
+    "cryptography>=42",
+    "ruff>=0.14",
+    "mypy>=1.18",
+    "types-paramiko>=5.0.0.20261006",
+]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/ftpctl/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ftpctl"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+explicit_package_bases = true
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
