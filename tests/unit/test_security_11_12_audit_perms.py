@@ -69,3 +69,19 @@ def test_env_interpolation_rules(workdir, monkeypatch) -> None:  # type: ignore[
     with pytest.raises(errors.FtpctlError) as excinfo2:
         load_config(cfg)
     assert excinfo2.value.exit_code == 2
+
+
+def test_ftp_prefix_var_rejected(workdir, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Lesson from real onboarding: only ${FTPCTL_*} interpolates; ${FTP_*} is refused.
+
+    A user exporting FTP_SAMAN_* / FTP_SEPEHR_* and referencing ${FTP_...} in
+    profiles.toml gets "disallowed env var reference" (exit 2) — the fix is to
+    rename the env vars to the FTPCTL_ prefix, not to relax the pattern.
+    """
+    from ftpctl.config import load_config
+    monkeypatch.setenv("FTP_SAMAN_PMR_PASSWORD", "s3cret")
+    cfg = write_config(workdir, '[profiles.a]\nprotocol="sftp"\nhost="h"\n'
+                                'username="u"\npassword="${FTP_SAMAN_PMR_PASSWORD}"\n')
+    with pytest.raises(errors.FtpctlError, match="disallowed env var reference") as excinfo:
+        load_config(cfg)
+    assert excinfo.value.exit_code == 2

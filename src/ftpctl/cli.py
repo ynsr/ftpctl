@@ -80,6 +80,15 @@ def cmd_profiles(config: Config, warnings: list[str], output: str = "json") -> i
     return 0
 
 
+def _load_sample_toml() -> str:
+    """Read the reference profiles.toml shipped as package data (single source)."""
+    return (Path(__file__).with_name("profiles.sample.toml")).read_text()
+
+
+def cmd_profiles_sample() -> int:
+    print(_load_sample_toml(), end="")
+    return 0
+
 def _walk(backend: Backend, path: str, limit: int, out: list[dict[str, object]]) -> bool:
     """Depth-first recursive walk. Returns True when the global cap truncated output."""
     truncated = False
@@ -235,6 +244,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_profiles = sub.add_parser("profiles", help="list profile names, protocol, host, root, readonly (no secrets)")
     p_profiles.add_argument("--output", "-o", **_fmt_kwargs)  # type: ignore[arg-type]
     p_profiles.add_argument("--json", **_json_kwargs)  # type: ignore[arg-type]
+    p_profiles.add_argument("--sample", action="store_true",
+                            help="print a reference profiles.toml with all fields and rules, then exit")
     p_ls = sub.add_parser("ls", help="list a remote directory as JSON")
     p_ls.add_argument("--profile", required=True)
     p_ls.add_argument("path", nargs="?", default="/")
@@ -276,6 +287,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)  # usage errors exit via _Parser.error envelope
     try:
+        if args.command == "profiles" and args.sample:
+            raise SystemExit(cmd_profiles_sample())
         if args.command == "profiles":
             config, warnings = load_config(
                 Path(args.config).expanduser() if args.config else None

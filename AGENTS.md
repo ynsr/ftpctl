@@ -27,3 +27,8 @@ All tests pass offline — HTTP is mocked with httpx.MockTransport; never write 
 
 - stdout data only; delete superseded code instead of deprecating; keep every command within the
   documented exit codes and the secrets-never-in-flags rule.
+- `edit`: pure line additions MUST use gap inserts (`PUT >N:` / `PUT <N:`) — bare `PUT N:` replaces
+  line N and silently drops it (once clobbered `password = ...` lines in profiles.toml). Re-read after every edit.
+- SFTP profiles need a `known_hosts` pin (RejectPolicy, no AutoAdd): use a dedicated file
+  (e.g. `~/.config/ftpctl/known_hosts`), never touch `~/.ssh/known_hosts`. Passwords only via
+  `${FTPCTL_*}` in username/password/host fields — other env prefixes are rejected.

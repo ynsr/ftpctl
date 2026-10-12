@@ -102,3 +102,56 @@ def test_exit_0_ls_stat_get_roundtrip(workdir, ftp_server, monkeypatch) -> None:
     result = json.loads(get.stdout)
     assert result["bytes"] == 10 and len(result["sha256"]) == 64
     assert (workdir / "hello.txt").read_bytes() == b"hello ftp\n"
+
+
+def test_profiles_sample_needs_no_config(workdir, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`profiles --sample` prints the reference TOML without touching any config.
+
+    Points FTPCTL_CONFIG at a nonexistent file: sample must still exit 0, proving
+    the flag short-circuits before load_config().
+    """
+    import tomllib
+
+    monkeypatch.setenv("FTPCTL_CONFIG", str(workdir / "does-not-exist.toml"))
+    cfg = workdir / "does-not-exist.toml"
+    assert not cfg.exists()
+    proc = run_ftpctl(cfg, "profiles", "--sample")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("# Reference profiles.toml")
+    # Uncommented, the sample must parse as valid TOML with all three protocols.
+    # Every content line is "# "-prefixed TOML; pure prose/blank lines are skipped.
+    toml_lines = []
+    for line in proc.stdout.splitlines():
+        if line.startswith("# [") or (line.startswith("# ") and "=" in line):
+            toml_lines.append(line[2:])
+        elif line.startswith("#") or not line.strip():
+            continue
+        else:
+            toml_lines.append(line)
+    raw = tomllib.loads("\n".join(toml_lines))
+    assert set(raw["profiles"]) == {"my-sftp", "my-ftps", "my-ftp"}
+
+
+def test_profiles_sample_lists_all_fields() -> None:
+    """The sample documents every interpolated field, the FTPCTL_ rule, and pinning."""
+    from ftpctl.cli import _load_sample_toml
+
+    sample = _load_sample_toml()
+    for needle in (
+        "${FTPCTL_MY_SFTP_PASSWORD}",
+        "known_hosts",
+        "ssh-keyscan",
+        "ftps_mode",
+        "allow_insecure applies to plain ftp ONLY",
+        "chmod 600",
+    ):
+        assert needle in sample
+
+
+def test_profiles_sample_matches_file() -> None:
+    """`--sample` source is the shipped sample file (single source, no constant)."""
+    from pathlib import Path
+
+    from ftpctl.cli import _load_sample_toml
+
+    assert _load_sample_toml() == Path("src/ftpctl/profiles.sample.toml").read_text()

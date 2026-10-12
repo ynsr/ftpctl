@@ -1,0 +1,39 @@
+# Reference profiles.toml — copy to ~/.config/ftpctl/profiles.toml, chmod 600.
+# Interpolation: ONLY ${FTPCTL_*} in username/password/host fields. Anything else
+# (e.g. ${FTP_...}, ${HOME}) is refused. Missing/empty var -> exit 3 naming the var.
+# SFTP pins host keys via known_hosts (RejectPolicy, never AutoAdd): scan out-of-band,
+# verify the fingerprint through a trusted channel, then append:
+#   ssh-keyscan -p <port> <host> >> ~/.config/ftpctl/known_hosts
+# Never put secrets in flags, logs, or code — env vars or this 0600 file only.
+#
+# [defaults]
+# timeout_seconds = 30
+# max_download_bytes = 104857600  # 100 MiB
+# max_list_entries = 1000
+# download_dir = "~/downloads"
+#
+# [profiles.my-sftp]
+# protocol = "sftp"  # sftp|ftps|ftp
+# host = "sftp.example.com"
+# port = 22  # sftp default 22; ftps/ftp default 21
+# username = "ftp_user"
+# password = "${FTPCTL_MY_SFTP_PASSWORD}"
+# root = "/"
+# readonly = true
+# known_hosts = "~/.config/ftpctl/known_hosts"
+#
+# [profiles.my-ftps]
+# protocol = "ftps"
+# host = "ftps.example.com"
+# port = 21
+# username = "ftp_user"
+# password = "${FTPCTL_MY_FTPS_PASSWORD}"
+# ftps_mode = "explicit"  # explicit|implicit
+# ftp_passive = true
+#
+# [profiles.my-ftp]
+# protocol = "ftp"
+# host = "127.0.0.1"
+# username = "anonymous"
+# password = "${FTPCTL_MY_FTP_PASSWORD}"
+# # allow_insecure applies to plain ftp ONLY; refused for sftp/ftps.
